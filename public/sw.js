@@ -266,42 +266,43 @@ async function fetchBlobFromPDS(cid, mimeType) {
   }
 
   // Get the raw data
-  const rawArrayBuffer = await response.arrayBuffer();
+ const rawArrayBuffer = await response.arrayBuffer();
+  const bytes = new Uint8Array(rawArrayBuffer);
 
-  // Decompress if needed (wisp blobs are gzip + base64 encoded)
   let decompressedData;
 
-  // Check if it's likely base64-encoded data
-  const textDecoder = new TextDecoder();
-  const textContent = textDecoder.decode(rawArrayBuffer);
-
-  // Wisp blobs are stored as base64-encoded gzip data
-  if (textContent.match(/^[A-Za-z0-9+/]+={0,2}$/) && textContent.length > 50) {
-    // It's base64 encoded
-    console.log('[Wisp SW] Detected base64-encoded blob, decompressing...');
-
-    // Decode base64
-    const binaryString = atob(textContent);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    // Check if it's gzip compressed (starts with 0x1f 0x8b)
-    if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-      // Decompress gzip
-      try {
-        decompressedData = await decompressGzip(bytes);
-      } catch (error) {
-        console.error('[Wisp SW] Failed to decompress gzip data:', error);
-        throw new Error(`Failed to decompress blob data for CID ${cid}: ${error.message}`);
-      }
-    } else {
-      decompressedData = bytes;
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    // Raw gzip (new format: gzip without base64 encoding)
+    try {
+      decompressedData = await decompressGzip(bytes);
+    } catch (error) {
+      console.error('[Wisp SW] Failed to decompress gzip data:', error);
+      throw new Error(`Failed to decompress blob data for CID ${cid}: ${error.message}`);
     }
   } else {
-    // Not base64, use as-is
-    decompressedData = new Uint8Array(rawArrayBuffer);
+    // Check if it's the legacy base64-encoded gzip format
+    const textContent = new TextDecoder().decode(rawArrayBuffer);
+    if (textContent.match(/^[A-Za-z0-9+/]+={0,2}$/) && textContent.length > 50) {
+      const binaryString = atob(textContent);
+      const b64Bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        b64Bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      if (b64Bytes[0] === 0x1f && b64Bytes[1] === 0x8b) {
+        try {
+          decompressedData = await decompressGzip(b64Bytes);
+        } catch (error) {
+          console.error('[Wisp SW] Failed to decompress gzip data:', error);
+          throw new Error(`Failed to decompress blob data for CID ${cid}: ${error.message}`);
+        }
+      } else {
+        decompressedData = b64Bytes;
+      }
+    } else {
+      // Plain uncompressed data
+      decompressedData = bytes;
+    }
   }
 
   // Create blob from decompressed data
